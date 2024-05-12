@@ -27,4 +27,4 @@ Download the demos
 ```
 
 
-Change the Wandb entity name in sac.py
+Change the Wandb entity name in config.py

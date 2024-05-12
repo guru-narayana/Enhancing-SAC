@@ -1,3 +1,4 @@
 demos/
 runs/
 wandb/
+__pycache__/
