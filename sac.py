@@ -3,6 +3,7 @@ import os
 import random
 import time
 from dataclasses import dataclass
+from typing import Optional
 
 import gymnasium as gym
 import numpy as np
@@ -11,13 +12,18 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import tyro
-from stable_baselines3.common.buffers import ReplayBuffer
+from buffer import ReplayBuffer
 from torch.utils.tensorboard import SummaryWriter
 
+# ManiSkill specific imports
+import mani_skill.envs
+from mani_skill.utils.wrappers.flatten import FlattenActionSpaceWrapper
+from mani_skill.utils.wrappers.record import RecordEpisode
+from mani_skill.vector.wrappers.gymnasium import ManiSkillVectorEnv
 
 @dataclass
 class Args:
-    exp_name: str = os.path.basename(__file__)[: -len(".py")]
+    exp_name: str = "TestSAC"
     """the name of this experiment"""
     seed: int = 1
     """seed of the experiment"""
@@ -27,27 +33,46 @@ class Args:
     """if toggled, cuda will be enabled by default"""
     track: bool = False
     """if toggled, this experiment will be tracked with Weights and Biases"""
-    wandb_project_name: str = "cleanRL"
+    wandb_project_name: str = "SAC_imporv"
     """the wandb's project name"""
-    wandb_entity: str = None
+    wandb_entity: str = "gurunarayana100" 
     """the entity (team) of wandb's project"""
     capture_video: bool = False
     """whether to capture videos of the agent performances (check out `videos` folder)"""
+    save_model: bool = True
+    """whether to save model into the `runs/{run_name}` folder"""
+    evaluate: bool = False
+    """if toggled, only runs evaluation with the given model checkpoint and saves the evaluation trajectories"""
+    checkpoint: str = None
+    """path to a pretrained checkpoint file to start evaluation/training from"""
 
     # Algorithm specific arguments
-    env_id: str = "Hopper-v4"
+    env_id: str = "PickCube-v1"
     """the environment id of the task"""
     total_timesteps: int = 1000000
     """total timesteps of the experiments"""
+    learning_rate: float = 3e-4
+    """the learning rate of the optimizer"""
+    num_envs: int = 512
+    """the number of parallel environments"""
+    num_eval_envs: int = 2
+    """the number of parallel evaluation environments"""
     buffer_size: int = int(1e6)
     """the replay memory buffer size"""
+    partial_reset: bool = True
+    """toggle if the environments should perform partial resets"""
+    num_steps: int = 50
+    """the number of steps to run in each environment per policy rollout"""
+    num_eval_steps: int = 50
+    """the number of steps to run in each evaluation environment during evaluation"""
+
     gamma: float = 0.99
     """the discount factor gamma"""
     tau: float = 0.005
     """target smoothing coefficient (default: 0.005)"""
     batch_size: int = 256
     """the batch size of sample from the reply memory"""
-    learning_starts: int = 5e3
+    learning_starts: int = 50
     """timestep to start learning"""
     policy_lr: float = 3e-4
     """the learning rate of the policy network optimizer"""
@@ -64,26 +89,24 @@ class Args:
     autotune: bool = True
     """automatic tuning of the entropy coefficient"""
 
+    target_kl: float = 0.1
+    """the target KL divergence threshold"""
+    eval_freq: int = 25
+    """evaluation frequency in terms of iterations"""
+    log: bool = True
+    """if toggled, will log to tensorboard"""
+def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
+    torch.nn.init.orthogonal_(layer.weight, std)
+    torch.nn.init.constant_(layer.bias, bias_const)
+    return layer
 
-def make_env(env_id, seed, idx, capture_video, run_name):
-    def thunk():
-        if capture_video and idx == 0:
-            env = gym.make(env_id, render_mode="rgb_array")
-            env = gym.wrappers.RecordVideo(env, f"videos/{run_name}")
-        else:
-            env = gym.make(env_id)
-        env = gym.wrappers.RecordEpisodeStatistics(env)
-        env.action_space.seed(seed)
-        return env
-
-    return thunk
 
 
 # ALGO LOGIC: initialize agent here:
 class SoftQNetwork(nn.Module):
     def __init__(self, env):
         super().__init__()
-        self.fc1 = nn.Linear(np.array(env.single_observation_space.shape).prod() + np.prod(env.single_action_space.shape), 256)
+        self.fc1 = nn.Linear(np.array(env.unwrapped.single_observation_space.shape).prod() + np.prod(env.unwrapped.single_action_space.shape), 256)
         self.fc2 = nn.Linear(256, 256)
         self.fc3 = nn.Linear(256, 1)
 
@@ -102,16 +125,16 @@ LOG_STD_MIN = -5
 class Actor(nn.Module):
     def __init__(self, env):
         super().__init__()
-        self.fc1 = nn.Linear(np.array(env.single_observation_space.shape).prod(), 256)
+        self.fc1 = nn.Linear(np.array(env.unwrapped.single_observation_space.shape).prod(), 256)
         self.fc2 = nn.Linear(256, 256)
-        self.fc_mean = nn.Linear(256, np.prod(env.single_action_space.shape))
-        self.fc_logstd = nn.Linear(256, np.prod(env.single_action_space.shape))
+        self.fc_mean = nn.Linear(256, np.prod(env.unwrapped.single_action_space.shape))
+        self.fc_logstd = nn.Linear(256, np.prod(env.unwrapped.single_action_space.shape))
         # action rescaling
         self.register_buffer(
-            "action_scale", torch.tensor((env.action_space.high - env.action_space.low) / 2.0, dtype=torch.float32)
+            "action_scale", torch.tensor((env.unwrapped.single_action_space.high - env.unwrapped.single_action_space.low) / 2.0, dtype=torch.float32)
         )
         self.register_buffer(
-            "action_bias", torch.tensor((env.action_space.high + env.action_space.low) / 2.0, dtype=torch.float32)
+            "action_bias", torch.tensor((env.unwrapped.single_action_space.high+ env.unwrapped.single_action_space.low) / 2.0, dtype=torch.float32)
         )
 
     def forward(self, x):
@@ -140,34 +163,31 @@ class Actor(nn.Module):
 
 
 if __name__ == "__main__":
-    import stable_baselines3 as sb3
-
-    if sb3.__version__ < "2.0":
-        raise ValueError(
-            """Ongoing migration: run the following command to install the new dependencies:
-poetry run pip install "stable_baselines3==2.0.0a1"
-"""
-        )
-
     args = tyro.cli(Args)
     run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
-    if args.track:
-        import wandb
-
-        wandb.init(
-            project=args.wandb_project_name,
-            entity=args.wandb_entity,
-            sync_tensorboard=True,
-            config=vars(args),
-            name=run_name,
-            monitor_gym=True,
-            save_code=True,
+    if not args.evaluate:
+        if args.track:
+            import wandb
+            wandb.init(
+                project=args.wandb_project_name,
+                entity=args.wandb_entity,
+                sync_tensorboard=True,
+                config=vars(args),
+                name=run_name,
+                monitor_gym=True,
+                group=args.exp_name,
+                save_code=True,
+            )
+            print(f"Logging to wandb in project {args.wandb_project_name} with name {run_name}")
+        writer = SummaryWriter(f"runs/{run_name}")
+        print(f"Logging to tensorboard in runs/{run_name}")
+        writer.add_text(
+            "hyperparameters",
+            "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
         )
-    writer = SummaryWriter(f"runs/{run_name}")
-    writer.add_text(
-        "hyperparameters",
-        "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
-    )
+    else:
+        writer = None
+        print("Evaluation mode is activated, will not track the experiment")
 
     # TRY NOT TO MODIFY: seeding
     random.seed(args.seed)
@@ -178,10 +198,21 @@ poetry run pip install "stable_baselines3==2.0.0a1"
     device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
 
     # env setup
-    envs = gym.vector.SyncVectorEnv([make_env(args.env_id, args.seed, 0, args.capture_video, run_name)])
-    assert isinstance(envs.single_action_space, gym.spaces.Box), "only continuous action space is supported"
+    env_kwargs = dict(obs_mode="state", control_mode="pd_joint_delta_pos", render_mode="rgb_array", sim_backend="gpu")
+    envs = gym.make(args.env_id, num_envs=args.num_envs if not args.evaluate else 1, **env_kwargs)
+    eval_envs = gym.make(args.env_id, num_envs=args.num_eval_envs, **env_kwargs)    
+    if isinstance(envs.action_space, gym.spaces.Dict):
+        envs = FlattenActionSpaceWrapper(envs)
+        eval_envs = FlattenActionSpaceWrapper(eval_envs)
+    if args.capture_video:
+        eval_output_dir = f"runs/{run_name}/videos"
+        if args.evaluate:
+            eval_output_dir = f"{os.path.dirname(args.checkpoint)}/test_videos"
+        print(f"Saving eval videos to {eval_output_dir}")
+        eval_envs = RecordEpisode(eval_envs, output_dir=eval_output_dir, save_trajectory=args.evaluate, trajectory_name="trajectory", max_steps_per_video=args.num_eval_steps, video_fps=30)
+    assert isinstance(envs.unwrapped.single_action_space, gym.spaces.Box), "only continuous action space is supported"
 
-    max_action = float(envs.single_action_space.high[0])
+    max_action = float(envs.unwrapped.single_action_space.high[0])
 
     actor = Actor(envs).to(device)
     qf1 = SoftQNetwork(envs).to(device)
@@ -195,21 +226,26 @@ poetry run pip install "stable_baselines3==2.0.0a1"
 
     # Automatic entropy tuning
     if args.autotune:
-        target_entropy = -torch.prod(torch.Tensor(envs.single_action_space.shape).to(device)).item()
+        target_entropy = -torch.prod(torch.Tensor(envs.unwrapped.single_action_space.shape).to(device)).item()
         log_alpha = torch.zeros(1, requires_grad=True, device=device)
         alpha = log_alpha.exp().item()
         a_optimizer = optim.Adam([log_alpha], lr=args.q_lr)
     else:
         alpha = args.alpha
 
-    envs.single_observation_space.dtype = np.float32
+
+    # TODO: Change the buffer manamgement stratagy
     rb = ReplayBuffer(
         args.buffer_size,
-        envs.single_observation_space,
-        envs.single_action_space,
+        envs.unwrapped.single_observation_space,
+        envs.unwrapped.single_action_space,
         device,
         handle_timeout_termination=False,
+        n_envs=args.num_envs
     )
+
+
+    
     start_time = time.time()
 
     # TRY NOT TO MODIFY: start the game
@@ -217,16 +253,15 @@ poetry run pip install "stable_baselines3==2.0.0a1"
     for global_step in range(args.total_timesteps):
         # ALGO LOGIC: put action logic here
         if global_step < args.learning_starts:
-            actions = np.array([envs.single_action_space.sample() for _ in range(envs.num_envs)])
+            actions = torch.tensor(envs.action_space.sample(), device=device)
         else:
-            actions, _, _ = actor.get_action(torch.Tensor(obs).to(device))
-            actions = actions.detach().cpu().numpy()
-
+            assert obs.shape[0] == args.num_envs, "The observation is not batched"
+            actions, _, _ = actor.get_action(obs)
         # TRY NOT TO MODIFY: execute the game and log data.
         next_obs, rewards, terminations, truncations, infos = envs.step(actions)
 
         # TRY NOT TO MODIFY: record rewards for plotting purposes
-        if "final_info" in infos:
+        if "final_info" in infos and writer is not None:
             for info in infos["final_info"]:
                 print(f"global_step={global_step}, episodic_return={info['episode']['r']}")
                 writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
@@ -234,14 +269,10 @@ poetry run pip install "stable_baselines3==2.0.0a1"
                 break
 
         # TRY NOT TO MODIFY: save data to reply buffer; handle `final_observation`
-        real_next_obs = next_obs.copy()
-        for idx, trunc in enumerate(truncations):
-            if trunc:
-                real_next_obs[idx] = infos["final_observation"][idx]
-        rb.add(obs, real_next_obs, actions, rewards, terminations, infos)
+        rb.add(obs.cpu().detach().numpy(), next_obs.cpu().detach().numpy(), actions.cpu().detach().numpy(), rewards.cpu().detach().numpy(), terminations.cpu().detach().numpy(), infos)
 
         # TRY NOT TO MODIFY: CRUCIAL step easy to overlook
-        obs = next_obs
+        obs = next_obs.clone()
 
         # ALGO LOGIC: training.
         if global_step > args.learning_starts:
@@ -294,8 +325,7 @@ poetry run pip install "stable_baselines3==2.0.0a1"
                     target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
                 for param, target_param in zip(qf2.parameters(), qf2_target.parameters()):
                     target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
-
-            if global_step % 100 == 0:
+            if global_step % 100 == 0 and writer is not None:
                 writer.add_scalar("losses/qf1_values", qf1_a_values.mean().item(), global_step)
                 writer.add_scalar("losses/qf2_values", qf2_a_values.mean().item(), global_step)
                 writer.add_scalar("losses/qf1_loss", qf1_loss.item(), global_step)
