@@ -20,15 +20,17 @@ class Args:
     """whether to capture videos of the agent performances (check out `videos` folder)"""
     save_model: bool = True
     """whether to save model into the `runs/{run_name}` folder"""
+    model_save_interval: int = 100
+    """the interval to save model in timestep"""
     evaluate: bool = False
     """if toggled, only runs evaluation with the given model checkpoint and saves the evaluation trajectories"""
-    checkpoint: str = None
+    checkpoint: str = ""
     """path to a pretrained checkpoint file to start evaluation/training from"""
 
     # Algorithm specific arguments
     env_id: str = "PickCube-v1"
     """the environment id of the task"""
-    total_timesteps: int = 1000000
+    total_timesteps: int = 1000
     """total timesteps of the experiments"""
     learning_rate: float = 3e-4
     """the learning rate of the optimizer"""

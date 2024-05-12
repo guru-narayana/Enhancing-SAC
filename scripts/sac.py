@@ -47,6 +47,7 @@ if __name__ == "__main__":
         )
     else:
         writer = None
+        eval_rewards = []
         print("Evaluation mode is activated, will not track the experiment")
 
     # TRY NOT TO MODIFY: seeding
@@ -66,7 +67,7 @@ if __name__ == "__main__":
         eval_envs = FlattenActionSpaceWrapper(eval_envs)
     if args.capture_video:
         eval_output_dir = f"runs/{run_name}/videos"
-        if args.evaluate:
+        if args.evaluate and args.checkpoint!="":
             eval_output_dir = f"{os.path.dirname(args.checkpoint)}/test_videos"
         print(f"Saving eval videos to {eval_output_dir}")
         eval_envs = RecordEpisode(eval_envs, output_dir=eval_output_dir, save_trajectory=args.evaluate, trajectory_name="trajectory", max_steps_per_video=args.num_eval_steps, video_fps=30)
@@ -81,8 +82,7 @@ if __name__ == "__main__":
     qf2_target = SoftQNetwork(envs).to(device)
     qf1_target.load_state_dict(qf1.state_dict())
     qf2_target.load_state_dict(qf2.state_dict())
-    q_optimizer = optim.Adam(list(qf1.parameters()) + list(qf2.parameters()), lr=args.q_lr)
-    actor_optimizer = optim.Adam(list(actor.parameters()), lr=args.policy_lr)
+
 
     # Automatic entropy tuning
     if args.autotune:
@@ -92,7 +92,13 @@ if __name__ == "__main__":
         a_optimizer = optim.Adam([log_alpha], lr=args.q_lr)
     else:
         alpha = args.alpha
-
+    
+    if args.checkpoint!="":
+        actor,qf1,qf2,qf1_target,qf2_target,alpha = load_model(actor, qf1, qf2, qf1_target, qf2_target, alpha, 0, args.checkpoint)
+        print(f"Model loaded from {args.checkpoint}")
+    
+    q_optimizer = optim.Adam(list(qf1.parameters()) + list(qf2.parameters()), lr=args.q_lr)
+    actor_optimizer = optim.Adam(list(actor.parameters()), lr=args.policy_lr)
 
     # TODO: Change the buffer manamgement stratagy
     rb = ReplayBuffer(
@@ -107,35 +113,39 @@ if __name__ == "__main__":
 
     
     start_time = time.time()
-
-    # TRY NOT TO MODIFY: start the game
-    obs, _ = envs.reset(seed=args.seed)
+    if args.evaluate:
+        obs, _ = eval_envs.reset(seed=args.seed)
+    else:
+        obs, _ = envs.reset(seed=args.seed)
     for global_step in range(args.total_timesteps):
-        # ALGO LOGIC: put action logic here
-        if global_step < args.learning_starts:
-            actions = torch.tensor(envs.action_space.sample(), device=device)
+        if not args.evaluate:
+            if global_step < args.learning_starts:
+                actions = torch.tensor(envs.action_space.sample(), device=device)
+            else:
+                assert obs.shape[0] == args.num_envs, "The observation is not batched"
+                actions, _, _ = actor.get_action(obs)
+            next_obs, rewards, terminations, truncations, infos = envs.step(actions)
+            if "final_info" in infos and writer is not None:
+                for info in infos["final_info"]:
+                    print(f"global_step={global_step}, episodic_return={info['episode']['r']}")
+                    writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
+                    writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
+                    break
+            rb.add(obs.cpu().detach().numpy(), next_obs.cpu().detach().numpy(), actions.cpu().detach().numpy(), rewards.cpu().detach().numpy(), terminations.cpu().detach().numpy(), infos)
         else:
-            assert obs.shape[0] == args.num_envs, "The observation is not batched"
             actions, _, _ = actor.get_action(obs)
-        # TRY NOT TO MODIFY: execute the game and log data.
-        next_obs, rewards, terminations, truncations, infos = envs.step(actions)
+            next_obs, rewards, terminations, truncations, _ = eval_envs.step(actions.cpu().detach().numpy())
+            if args.num_eval_envs == 1:
+                eval_rewards.append(rewards.item())
+            else:
+                eval_rewards.append(rewards.mean().item())
+            if len(terminations)==1 and terminations:
+                print(f"global_step={global_step}, episodic_return={sum(eval_rewards)}")
 
-        # TRY NOT TO MODIFY: record rewards for plotting purposes
-        if "final_info" in infos and writer is not None:
-            for info in infos["final_info"]:
-                print(f"global_step={global_step}, episodic_return={info['episode']['r']}")
-                writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
-                writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
-                break
 
-        # TRY NOT TO MODIFY: save data to reply buffer; handle `final_observation`
-        rb.add(obs.cpu().detach().numpy(), next_obs.cpu().detach().numpy(), actions.cpu().detach().numpy(), rewards.cpu().detach().numpy(), terminations.cpu().detach().numpy(), infos)
-
-        # TRY NOT TO MODIFY: CRUCIAL step easy to overlook
         obs = next_obs.clone()
 
-        # ALGO LOGIC: training.
-        if global_step > args.learning_starts:
+        if global_step > args.learning_starts and not args.evaluate:
             data = rb.sample(args.batch_size)
             with torch.no_grad():
                 next_state_actions, next_state_log_pi, _ = actor.get_action(data.next_observations)
@@ -198,5 +208,9 @@ if __name__ == "__main__":
                 if args.autotune:
                     writer.add_scalar("losses/alpha_loss", alpha_loss.item(), global_step)
 
+            if args.save_model and global_step % args.model_save_interval == 0:
+                save_model(actor, qf1, qf2, alpha, global_step, f"runs/{run_name}")
     envs.close()
-    writer.close()
+    eval_envs.close()
+    if writer is not None:
+        writer.close()

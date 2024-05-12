@@ -62,3 +62,21 @@ class Actor(nn.Module):
         log_prob = log_prob.sum(1, keepdim=True)
         mean = torch.tanh(mean) * self.action_scale + self.action_bias
         return action, log_prob, mean
+    
+def save_model(actor,qf1,qf2,alpha,global_step,path):
+    torch.save({
+    'global_step': global_step,
+    'actor_state_dict': actor.state_dict(),
+    'qf1_state_dict': qf1.state_dict(),
+    'qf2_state_dict': qf2.state_dict(),
+    'alpha': alpha}, path + f'/model_{global_step}.pt')
+
+def load_model(actor,qf1,qf2,qf1_target,qf2_target,alpha,path):
+    checkpoint = torch.load(path)
+    actor.load_state_dict(checkpoint['actor_state_dict'])
+    qf1.load_state_dict(checkpoint['qf1_state_dict'])
+    qf2.load_state_dict(checkpoint['qf2_state_dict'])
+    qf1_target.load_state_dict(checkpoint['qf1_state_dict'])
+    qf2_target.load_state_dict(checkpoint['qf2_state_dict'])
+    alpha = checkpoint['alpha']
+    return actor,qf1,qf2,qf1_target,qf2_target,alpha
