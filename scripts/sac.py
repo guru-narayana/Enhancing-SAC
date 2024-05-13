@@ -118,6 +118,7 @@ if __name__ == "__main__":
     else:
         obs, _ = envs.reset(seed=args.seed)
     for global_step in range(args.total_timesteps):
+        env_step = global_step*args.num_envs
         if not args.evaluate:
             if global_step < args.learning_starts:
                 actions = torch.tensor(envs.action_space.sample(), device=device)
@@ -125,22 +126,29 @@ if __name__ == "__main__":
                 assert obs.shape[0] == args.num_envs, "The observation is not batched"
                 actions, _, _ = actor.get_action(obs)
             next_obs, rewards, terminations, truncations, infos = envs.step(actions)
+            dones = terminations|truncations
             if "final_info" in infos and writer is not None:
                 for info in infos["final_info"]:
-                    print(f"global_step={global_step}, episodic_return={info['episode']['r']}")
-                    writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
-                    writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
+                    print(f"env_step={env_step}, episodic_return={info['episode']['r']}")
+                    writer.add_scalar("charts/episodic_return", info["episode"]["r"], env_step)
+                    writer.add_scalar("charts/episodic_length", info["episode"]["l"], env_step)
                     break
             rb.add(obs.cpu().detach().numpy(), next_obs.cpu().detach().numpy(), actions.cpu().detach().numpy(), rewards.cpu().detach().numpy(), terminations.cpu().detach().numpy(), infos)
+            if dones.any():
+                next_obs, _ = envs.reset(seed=args.seed)
         else:
             actions, _, _ = actor.get_action(obs)
             next_obs, rewards, terminations, truncations, _ = eval_envs.step(actions.cpu().detach().numpy())
+            dones = terminations|truncations
             if args.num_eval_envs == 1:
                 eval_rewards.append(rewards.item())
             else:
                 eval_rewards.append(rewards.mean().item())
-            if len(truncations)==1 and truncations:
-                print(f"global_step={global_step}, episodic_return={sum(eval_rewards)}")
+            
+            if dones.any():
+                print(f"env_step={env_step}, episodic_return={sum(eval_rewards)}")
+                eval_rewards = []
+                next_obs, _ = eval_envs.reset(seed=args.seed)
 
 
         obs = next_obs.clone()
@@ -196,18 +204,18 @@ if __name__ == "__main__":
                 for param, target_param in zip(qf2.parameters(), qf2_target.parameters()):
                     target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
             if global_step % 100 == 0 and writer is not None:
-                writer.add_scalar("losses/qf1_values", qf1_a_values.mean().item(), global_step)
-                writer.add_scalar("losses/qf2_values", qf2_a_values.mean().item(), global_step)
-                writer.add_scalar("losses/qf1_loss", qf1_loss.item(), global_step)
-                writer.add_scalar("losses/qf2_loss", qf2_loss.item(), global_step)
-                writer.add_scalar("losses/qf_loss", qf_loss.item() / 2.0, global_step)
-                writer.add_scalar("losses/actor_loss", actor_loss.item(), global_step)
-                writer.add_scalar("losses/alpha", alpha, global_step)
-                print("Step:", global_step, "SPS:", int(global_step / (time.time() - start_time)), "Actor Loss:", actor_loss.item(), "Q Loss:", qf_loss.item() / 2.0, "Alpha:", alpha)
+                writer.add_scalar("losses/qf1_values", qf1_a_values.mean().item(), env_step)
+                writer.add_scalar("losses/qf2_values", qf2_a_values.mean().item(), env_step)
+                writer.add_scalar("losses/qf1_loss", qf1_loss.item(), env_step)
+                writer.add_scalar("losses/qf2_loss", qf2_loss.item(), env_step)
+                writer.add_scalar("losses/qf_loss", qf_loss.item() / 2.0, env_step)
+                writer.add_scalar("losses/actor_loss", actor_loss.item(), env_step)
+                writer.add_scalar("losses/alpha", alpha, env_step)
+                print("Step:", env_step, "SPS:", int(env_step / (time.time() - start_time)), "Actor Loss:", actor_loss.item(), "Q Loss:", qf_loss.item() / 2.0, "Alpha:", alpha)
                 print("Q1 Loss:", qf1_loss.item(), "Q1 Value:", qf1_a_values.mean().item(), "Q2 Value:", qf2_a_values.mean().item(),"\n")
-                writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
+                writer.add_scalar("charts/SPS", int(env_step / (time.time() - start_time)), env_step)
                 if args.autotune:
-                    writer.add_scalar("losses/alpha_loss", alpha_loss.item(), global_step)
+                    writer.add_scalar("losses/alpha_loss", alpha_loss.item(), env_step)
 
             if args.save_model and global_step % args.model_save_interval == 0:
                 save_model(actor, qf1, qf2, alpha, global_step, f"runs/{run_name}")
