@@ -30,7 +30,7 @@ class Args:
     # Algorithm specific arguments
     env_id: str = "PickCube-v1"
     """the environment id of the task"""
-    total_timesteps: int = 10001
+    total_timesteps: int = 1000000
     """total timesteps of the experiments"""
     learning_rate: float = 3e-4
     """the learning rate of the optimizer"""

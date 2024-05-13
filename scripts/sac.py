@@ -117,29 +117,49 @@ if __name__ == "__main__":
         obs, _ = eval_envs.reset(seed=args.seed)
     else:
         obs, _ = envs.reset(seed=args.seed)
+
+    episodic_return = 0
+    episodic_length = 0
+
     for global_step in range(args.total_timesteps):
+
         env_step = global_step*args.num_envs
+        
+        # Training : collect data and store in the replay buffer
         if not args.evaluate:
             if global_step < args.learning_starts:
                 actions = torch.tensor(envs.action_space.sample(), device=device)
             else:
                 assert obs.shape[0] == args.num_envs, "The observation is not batched"
                 actions, _, _ = actor.get_action(obs)
+
             next_obs, rewards, terminations, truncations, infos = envs.step(actions)
+
             dones = terminations|truncations
-            if "final_info" in infos and writer is not None:
-                for info in infos["final_info"]:
-                    print(f"env_step={env_step}, episodic_return={info['episode']['r']}")
-                    writer.add_scalar("charts/episodic_return", info["episode"]["r"], env_step)
-                    writer.add_scalar("charts/episodic_length", info["episode"]["l"], env_step)
-                    break
-            rb.add(obs.cpu().detach().numpy(), next_obs.cpu().detach().numpy(), actions.cpu().detach().numpy(), rewards.cpu().detach().numpy(), terminations.cpu().detach().numpy(), infos)
+
+            episodic_return += rewards.sum().item()
+            episodic_length += 1
+
+
             if dones.any():
+                avg_return = episodic_return / args.num_envs
+                print(f"env_step={env_step}, episodic_return={avg_return}, episodic_length={episodic_length}")
+                writer.add_scalar("charts/episodic_return", avg_return, env_step)
+                writer.add_scalar("charts/episodic_length", episodic_length, env_step)
+                episodic_return = 0
+                episodic_length = 0
                 next_obs, _ = envs.reset(seed=args.seed)
+
+            rb.add(obs.cpu().detach().numpy(), next_obs.cpu().detach().numpy(), actions.cpu().detach().numpy(), rewards.cpu().detach().numpy(), terminations.cpu().detach().numpy(), infos)
+
+        # Evaluation
         else:
             actions, _, _ = actor.get_action(obs)
+
             next_obs, rewards, terminations, truncations, _ = eval_envs.step(actions.cpu().detach().numpy())
+
             dones = terminations|truncations
+
             if args.num_eval_envs == 1:
                 eval_rewards.append(rewards.item())
             else:
@@ -153,6 +173,7 @@ if __name__ == "__main__":
 
         obs = next_obs.clone()
 
+        # Training : update the network
         if global_step > args.learning_starts and not args.evaluate:
             data = rb.sample(args.batch_size)
             with torch.no_grad():
