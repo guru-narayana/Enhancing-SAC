@@ -2,3 +2,6 @@ demos/
 runs/
 wandb/
 __pycache__/
+main.ipynb
+test.ipynb
+
