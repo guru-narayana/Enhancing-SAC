@@ -20,7 +20,7 @@ class Args:
     """whether to capture videos of the agent performances (check out `videos` folder)"""
     save_model: bool = True
     """whether to save model into the `runs/{run_name}` folder"""
-    model_save_interval: int = 100
+    model_save_interval: int = 500
     """the interval to save model in timestep"""
     evaluate: bool = False
     """if toggled, only runs evaluation with the given model checkpoint and saves the evaluation trajectories"""
@@ -30,13 +30,13 @@ class Args:
     # Algorithm specific arguments
     env_id: str = "PickCube-v1"
     """the environment id of the task"""
-    total_timesteps: int = 1000
+    total_timesteps: int = 10001
     """total timesteps of the experiments"""
     learning_rate: float = 3e-4
     """the learning rate of the optimizer"""
-    num_envs: int = 512
+    num_envs: int = 2048
     """the number of parallel environments"""
-    num_eval_envs: int = 2
+    num_eval_envs: int = 8
     """the number of parallel evaluation environments"""
     buffer_size: int = int(1e6)
     """the replay memory buffer size"""

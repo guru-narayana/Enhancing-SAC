@@ -94,7 +94,7 @@ if __name__ == "__main__":
         alpha = args.alpha
     
     if args.checkpoint!="":
-        actor,qf1,qf2,qf1_target,qf2_target,alpha = load_model(actor, qf1, qf2, qf1_target, qf2_target, alpha, 0, args.checkpoint)
+        actor,qf1,qf2,qf1_target,qf2_target,alpha = load_model(actor, qf1, qf2, qf1_target, qf2_target, alpha, args.checkpoint)
         print(f"Model loaded from {args.checkpoint}")
     
     q_optimizer = optim.Adam(list(qf1.parameters()) + list(qf2.parameters()), lr=args.q_lr)
@@ -139,7 +139,7 @@ if __name__ == "__main__":
                 eval_rewards.append(rewards.item())
             else:
                 eval_rewards.append(rewards.mean().item())
-            if len(terminations)==1 and terminations:
+            if len(truncations)==1 and truncations:
                 print(f"global_step={global_step}, episodic_return={sum(eval_rewards)}")
 
 
@@ -203,7 +203,8 @@ if __name__ == "__main__":
                 writer.add_scalar("losses/qf_loss", qf_loss.item() / 2.0, global_step)
                 writer.add_scalar("losses/actor_loss", actor_loss.item(), global_step)
                 writer.add_scalar("losses/alpha", alpha, global_step)
-                print("SPS:", int(global_step / (time.time() - start_time)))
+                print("Step:", global_step, "SPS:", int(global_step / (time.time() - start_time)), "Actor Loss:", actor_loss.item(), "Q Loss:", qf_loss.item() / 2.0, "Alpha:", alpha)
+                print("Q1 Loss:", qf1_loss.item(), "Q1 Value:", qf1_a_values.mean().item(), "Q2 Value:", qf2_a_values.mean().item(),"\n")
                 writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
                 if args.autotune:
                     writer.add_scalar("losses/alpha_loss", alpha_loss.item(), global_step)
