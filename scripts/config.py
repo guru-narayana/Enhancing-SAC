@@ -32,28 +32,28 @@ class Args:
     """the environment id of the task"""
     total_timesteps: int = 1000000
     """total timesteps of the experiments"""
-    learning_rate: float = 3e-4
+    learning_rate: float = 3e-3
     """the learning rate of the optimizer"""
     num_envs: int = 2048
     """the number of parallel environments"""
     num_eval_envs: int = 8
     """the number of parallel evaluation environments"""
-    buffer_size: int = int(1e6)
+    buffer_size: int = int(4e6)
     """the replay memory buffer size"""
     partial_reset: bool = True
     """toggle if the environments should perform partial resets"""
-    num_steps: int = 50
+    num_steps: int = 400
     """the number of steps to run in each environment per policy rollout"""
-    num_eval_steps: int = 50
+    num_eval_steps: int = 400
     """the number of steps to run in each evaluation environment during evaluation"""
 
     gamma: float = 0.99
     """the discount factor gamma"""
-    tau: float = 0.005
+    tau: float = 0.015
     """target smoothing coefficient (default: 0.005)"""
-    batch_size: int = 256
+    batch_size: int = 4096
     """the batch size of sample from the reply memory"""
-    learning_starts: int = 50
+    learning_starts: int = 1000
     """timestep to start learning"""
     policy_lr: float = 3e-4
     """the learning rate of the policy network optimizer"""
@@ -61,7 +61,7 @@ class Args:
     """the learning rate of the Q network network optimizer"""
     policy_frequency: int = 2
     """the frequency of training policy (delayed)"""
-    target_network_frequency: int = 1  # Denis Yarats' implementation delays this by 2.
+    target_network_frequency: int = 2  # Denis Yarats' implementation delays this by 2.
     """the frequency of updates for the target nerworks"""
     noise_clip: float = 0.5
     """noise clip parameter of the Target Policy Smoothing Regularization"""
