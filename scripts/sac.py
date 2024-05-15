@@ -120,6 +120,8 @@ if __name__ == "__main__":
 
     episodic_return = 0
     episodic_length = 0
+    avg_episodic_return = 0
+    avg_episode_length = 0
 
     for global_step in range(args.total_timesteps):
 
@@ -143,9 +145,11 @@ if __name__ == "__main__":
 
             if dones.any():
                 avg_return = episodic_return / args.num_envs
+                avg_episodic_return += avg_return
+                avg_episode_length += episodic_length
                 print(f"env_step={env_step}, episodic_return={avg_return}, episodic_length={episodic_length}")
-                writer.add_scalar("charts/episodic_return", avg_return, env_step)
-                writer.add_scalar("charts/episodic_length", episodic_length, env_step)
+                writer.add_scalar("returns/episodic_return", avg_return, env_step)
+                writer.add_scalar("returns/episodic_length", episodic_length, env_step)
                 episodic_return = 0
                 episodic_length = 0
                 next_obs, _ = envs.reset(seed=args.seed)
@@ -232,6 +236,10 @@ if __name__ == "__main__":
                 writer.add_scalar("losses/qf_loss", qf_loss.item() / 2.0, env_step)
                 writer.add_scalar("losses/actor_loss", actor_loss.item(), env_step)
                 writer.add_scalar("losses/alpha", alpha, env_step)
+                writer.add_scalar("returns/avg_episodic_return", avg_episodic_return/100, env_step)
+                writer.add_scalar("returns/avg_episode_length", avg_episode_length/100, env_step)
+                avg_episodic_return = 0
+                avg_episode_length = 0
                 print("Step:", env_step, "SPS:", int(env_step / (time.time() - start_time)), "Actor Loss:", actor_loss.item(), "Q Loss:", qf_loss.item() / 2.0, "Alpha:", alpha)
                 print("Q1 Loss:", qf1_loss.item(), "Q1 Value:", qf1_a_values.mean().item(), "Q2 Value:", qf2_a_values.mean().item(),"\n")
                 writer.add_scalar("charts/SPS", int(env_step / (time.time() - start_time)), env_step)
