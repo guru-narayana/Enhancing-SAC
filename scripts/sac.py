@@ -24,6 +24,7 @@ from mani_skill.vector.wrappers.gymnasium import ManiSkillVectorEnv
 
 if __name__ == "__main__":
     args = tyro.cli(Args)
+    args.buffer_size = int(args.buffer_size)
     run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
     if not args.evaluate:
         if args.track:
@@ -104,11 +105,11 @@ if __name__ == "__main__":
 
     # TODO: Change the buffer manamgement stratagy
     rb = ReplayBuffer(
+        args,
         args.buffer_size,
         envs.unwrapped.single_observation_space,
         envs.unwrapped.single_action_space,
         device,
-        handle_timeout_termination=False,
         n_envs=args.num_envs
     )
 

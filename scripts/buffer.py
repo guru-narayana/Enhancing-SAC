@@ -6,6 +6,7 @@ from typing import Any, Dict, Generator, List, Optional, Tuple, Union
 import numpy as np
 import torch as th
 from gymnasium import spaces
+from mani_skill.trajectory.dataset import ManiSkillTrajectoryDataset
 
 from stable_baselines3.common.preprocessing import get_action_dim, get_obs_shape
 from stable_baselines3.common.type_aliases import (
@@ -113,7 +114,6 @@ class BaseBuffer(ABC):
         batch_inds = np.random.randint(0, upper_bound, size=batch_size)
         return self._get_samples(batch_inds, env=env)
 
-    @abstractmethod
     def _get_samples(
         self, batch_inds: np.ndarray, env: Optional[VecNormalize] = None
     ) -> Union[ReplayBufferSamples, RolloutBufferSamples]:
@@ -154,7 +154,7 @@ class BaseBuffer(ABC):
         return reward
 
 
-class ReplayBuffer(BaseBuffer):
+class Replaybuffer(BaseBuffer):
     """
     Replay buffer used in off-policy algorithms like SAC/TD3.
 
@@ -337,3 +337,111 @@ class ReplayBuffer(BaseBuffer):
         if dtype == np.float64:
             return np.float32
         return dtype
+    
+
+class ReplayBuffer(BaseBuffer):
+
+    observations: np.ndarray
+    next_observations: np.ndarray
+    actions: np.ndarray
+    rewards: np.ndarray
+    dones: np.ndarray
+
+    demo_observations: np.ndarray
+    demo_next_observations: np.ndarray
+    demo_actions: np.ndarray
+    demo_rewards: np.ndarray
+    demo_dones: np.ndarray
+
+    def __init__(
+        self,
+        args,
+        buffer_size: int,
+        observation_space: spaces.Space,
+        action_space: spaces.Space,
+        device: Union[th.device, str] = "auto",
+        n_envs: int = 1,
+
+    ):
+        super().__init__(buffer_size, observation_space, action_space, device, n_envs=n_envs)
+        self.buffer_size = max(buffer_size // n_envs, 1)
+        self.observations = np.zeros((self.buffer_size, self.n_envs, *self.obs_shape), dtype=observation_space.dtype)
+        self.next_observations = np.zeros((self.buffer_size, self.n_envs, *self.obs_shape), dtype=observation_space.dtype)
+        self.actions = np.zeros((self.buffer_size, self.n_envs, self.action_dim), dtype=action_space.dtype)
+        self.rewards = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
+        self.dones = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
+        self.args = args
+        if args.use_demo:
+            self.add_demo_data()
+
+    def add_demo_data(self):
+        dataset = ManiSkillTrajectoryDataset(dataset_file=f"demos/{self.args.env_id}/teleop/trajectory.state.pd_joint_delta_pos.h5")
+        self.demo_observations = np.array(dataset.data["traj_0"]["obs"]).squeeze(1)[:-1]
+        self.demo_next_observations = np.array(dataset.data["traj_0"]["obs"]).squeeze(1)[1:]
+        self.demo_actions = np.array(dataset.data["traj_0"]["actions"])
+        self.demo_rewards = np.array(dataset.data["traj_0"]["rewards"])
+        self.demo_dones = np.array(dataset.data["traj_0"]["success"]) | np.array(dataset.data["traj_0"]["terminated"]) 
+        for eps_id in range(1,len(dataset.episodes)):
+            eps = dataset.episodes[eps_id]
+            trajectory = dataset.data[f"traj_{eps['episode_id']}"]
+            self.demo_observations = np.concatenate((self.demo_observations, np.array(trajectory["obs"]).squeeze(1)[:-1]), axis=0)
+            self.demo_next_observations = np.concatenate((self.demo_next_observations, np.array(trajectory["obs"]).squeeze(1)[1:]), axis=0)
+            self.demo_actions = np.concatenate((self.demo_actions, np.array(trajectory["actions"])), axis=0)
+            self.demo_rewards = np.concatenate((self.demo_rewards, np.array(trajectory["rewards"])), axis=0)
+            self.demo_dones = np.concatenate((self.demo_dones, np.array(trajectory["success"])), axis=0)
+        self.demo_rewards = self.demo_rewards.reshape(-1,1)
+        self.demo_dones = self.demo_dones.reshape(-1,1)
+        print(f"Demo data loaded with {len(self.demo_observations)} samples")
+        print(self.demo_observations.shape,self.demo_actions.shape,self.demo_next_observations.shape,self.demo_dones.shape,self.demo_rewards.shape)
+
+    def add(
+        self,
+        obs: np.ndarray,
+        next_obs: np.ndarray,
+        action: np.ndarray,
+        reward: np.ndarray,
+        done: np.ndarray,
+        infos: List[Dict[str, Any]],
+    ) -> None:
+        action = action.reshape((self.n_envs, self.action_dim))
+        self.observations[self.pos] = np.array(obs)
+        self.next_observations[self.pos] = np.array(next_obs)
+        self.actions[self.pos] = np.array(action)
+        self.rewards[self.pos] = np.array(reward)
+        self.dones[self.pos] = np.array(done)
+        self.pos += 1
+        if self.pos == self.buffer_size:
+            self.full = True
+            self.pos = 0
+
+    def sample(self, batch_size: int, env: Optional[VecNormalize] = None) -> ReplayBufferSamples:
+        if self.args.use_demo:
+            demo_bs = int(batch_size*self.args.demo_percent)
+            batch_size -= demo_bs
+        upper_bound = self.buffer_size if self.full else self.pos
+        batch_inds = np.random.randint(0, upper_bound, size=batch_size)
+        env_indices = np.random.randint(0, high=self.n_envs, size=(len(batch_inds),))
+        next_obs = self.next_observations[batch_inds, env_indices, :]
+        obs_sample = self.observations[batch_inds, env_indices, :]
+        ac_sample = self.actions[batch_inds, env_indices, :]
+        next_sample = next_obs
+        done_sample = self.dones[batch_inds, env_indices].reshape(-1, 1)
+        reward_sample = self._normalize_reward(self.rewards[batch_inds, env_indices].reshape(-1, 1), env)
+        if self.args.use_demo:
+            demo_inds = np.arange(len(self.demo_observations))
+            np.random.shuffle(demo_inds)
+            suffle_demo_inds = demo_inds[0:demo_bs]
+            obs_sample = np.concatenate((self.demo_observations[suffle_demo_inds,:],obs_sample), axis=0)
+            ac_sample = np.concatenate((self.demo_actions[suffle_demo_inds,:],ac_sample), axis=0)
+            next_sample = np.concatenate((self.demo_next_observations[suffle_demo_inds,:],next_sample), axis=0)
+            done_sample = np.concatenate((self.demo_dones[suffle_demo_inds,:],done_sample), axis=0)
+            reward_sample = np.concatenate((self.demo_rewards[suffle_demo_inds,:],reward_sample), axis=0)
+        data = (
+            obs_sample,
+            ac_sample,
+            next_sample,
+            done_sample,
+            reward_sample,
+        )
+        return ReplayBufferSamples(*tuple(map(self.to_torch, data)))
+

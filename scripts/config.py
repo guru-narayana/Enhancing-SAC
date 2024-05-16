@@ -30,7 +30,7 @@ class Args:
     # Algorithm specific arguments
     env_id: str = "PickCube-v1"
     """the environment id of the task"""
-    total_timesteps: int = 1000000
+    total_timesteps: int = 50000
     """total timesteps of the experiments"""
     learning_rate: float = 3e-3
     """the learning rate of the optimizer"""
@@ -38,7 +38,7 @@ class Args:
     """the number of parallel environments"""
     num_eval_envs: int = 8
     """the number of parallel evaluation environments"""
-    buffer_size: int = int(4e6)
+    buffer_size: float = 4e6
     """the replay memory buffer size"""
     partial_reset: bool = True
     """toggle if the environments should perform partial resets"""
@@ -76,3 +76,9 @@ class Args:
     """evaluation frequency in terms of iterations"""
     log: bool = True
     """if toggled, will log to tensorboard"""
+
+    # demo only parameters
+    use_demo: bool = False
+    """if toggled, will use demonstrations"""
+    demo_percent: float = 0.5
+    """the percentage of the demonstrations to use"""
