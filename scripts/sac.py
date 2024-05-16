@@ -71,6 +71,8 @@ if __name__ == "__main__":
             eval_output_dir = f"{os.path.dirname(args.checkpoint)}/test_videos"
         print(f"Saving eval videos to {eval_output_dir}")
         eval_envs = RecordEpisode(eval_envs, output_dir=eval_output_dir, save_trajectory=args.evaluate, trajectory_name="trajectory", max_steps_per_video=args.num_eval_steps, video_fps=30)
+    envs = ManiSkillVectorEnv(envs, args.num_envs, ignore_terminations=not args.partial_reset, **env_kwargs)
+    eval_envs = ManiSkillVectorEnv(eval_envs, args.num_eval_envs, ignore_terminations=not args.partial_reset, **env_kwargs)
     assert isinstance(envs.unwrapped.single_action_space, gym.spaces.Box), "only continuous action space is supported"
 
     max_action = float(envs.unwrapped.single_action_space.high[0])
@@ -118,11 +120,11 @@ if __name__ == "__main__":
     else:
         obs, _ = envs.reset(seed=args.seed)
 
-    episodic_return = 0
-    episodic_length = 0
-    avg_episodic_return = 0
-    avg_episode_length = 0
-
+    episodic_return = torch.zeros(args.num_envs).to(device)
+    episodic_length = torch.zeros(args.num_envs).to(device)
+    done_count = 0
+    avg_return = 0
+    avg_length = 0
     for global_step in range(args.total_timesteps):
 
         env_step = global_step*args.num_envs
@@ -137,22 +139,17 @@ if __name__ == "__main__":
 
             next_obs, rewards, terminations, truncations, infos = envs.step(actions)
 
-            dones = terminations|truncations
-
-            episodic_return += rewards.sum().item()
+            dones = truncations | terminations
+            episodic_return += rewards
             episodic_length += 1
 
 
             if dones.any():
-                avg_return = episodic_return / args.num_envs
-                avg_episodic_return += avg_return
-                avg_episode_length += episodic_length
-                print(f"env_step={env_step}, episodic_return={avg_return}, episodic_length={episodic_length}")
-                writer.add_scalar("returns/episodic_return", avg_return, env_step)
-                writer.add_scalar("returns/episodic_length", episodic_length, env_step)
-                episodic_return = 0
-                episodic_length = 0
-                next_obs, _ = envs.reset(seed=args.seed)
+                avg_return += torch.sum(episodic_return[dones]).item()
+                avg_length += torch.sum(episodic_length[dones]).item()
+                done_count += torch.sum(dones).item()
+                episodic_return[dones] = 0
+                episodic_length[dones] = 0
 
             rb.add(obs.cpu().detach().numpy(), next_obs.cpu().detach().numpy(), actions.cpu().detach().numpy(), rewards.cpu().detach().numpy(), terminations.cpu().detach().numpy(), infos)
 
@@ -161,7 +158,6 @@ if __name__ == "__main__":
             actions, _, _ = actor.get_action(obs)
 
             next_obs, rewards, terminations, truncations, _ = eval_envs.step(actions.cpu().detach().numpy())
-
             dones = terminations|truncations
 
             if args.num_eval_envs == 1:
@@ -228,7 +224,7 @@ if __name__ == "__main__":
                     target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
                 for param, target_param in zip(qf2.parameters(), qf2_target.parameters()):
                     target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
-            if global_step % 100 == 0 and writer is not None:
+            if global_step % 200 == 0 and writer is not None:
                 writer.add_scalar("losses/qf1_values", qf1_a_values.mean().item(), env_step)
                 writer.add_scalar("losses/qf2_values", qf2_a_values.mean().item(), env_step)
                 writer.add_scalar("losses/qf1_loss", qf1_loss.item(), env_step)
@@ -236,13 +232,13 @@ if __name__ == "__main__":
                 writer.add_scalar("losses/qf_loss", qf_loss.item() / 2.0, env_step)
                 writer.add_scalar("losses/actor_loss", actor_loss.item(), env_step)
                 writer.add_scalar("losses/alpha", alpha, env_step)
-                writer.add_scalar("returns/avg_episodic_return", avg_episodic_return/100, env_step)
-                writer.add_scalar("returns/avg_episode_length", avg_episode_length/100, env_step)
-                avg_episodic_return = 0
-                avg_episode_length = 0
-                print("Step:", env_step, "SPS:", int(env_step / (time.time() - start_time)), "Actor Loss:", actor_loss.item(), "Q Loss:", qf_loss.item() / 2.0, "Alpha:", alpha)
-                print("Q1 Loss:", qf1_loss.item(), "Q1 Value:", qf1_a_values.mean().item(), "Q2 Value:", qf2_a_values.mean().item(),"\n")
+                writer.add_scalar("returns/avg_episodic_return", avg_return/done_count, env_step)
+                writer.add_scalar("returns/avg_episodic_length", avg_length/done_count, env_step)
                 writer.add_scalar("charts/SPS", int(env_step / (time.time() - start_time)), env_step)
+                print(f"env_step={env_step}, episodic_return={avg_return/done_count}, episodic_length={avg_length/done_count}")
+                print("Actor Loss:", actor_loss.item(), "Q Loss:", qf_loss.item() / 2.0, "Alpha:", alpha,end=" ")
+                print("Q1 Loss:", qf1_loss.item(), "Q1 Value:", qf1_a_values.mean().item(), "Q2 Value:", qf2_a_values.mean().item(),"\n")
+                done_count = avg_return = avg_length = 0
                 if args.autotune:
                     writer.add_scalar("losses/alpha_loss", alpha_loss.item(), env_step)
 
