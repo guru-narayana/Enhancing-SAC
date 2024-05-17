@@ -34,11 +34,11 @@ class Args:
     """total timesteps of the experiments"""
     learning_rate: float = 3e-3
     """the learning rate of the optimizer"""
-    num_envs: int = 2048
+    num_envs: int = 512
     """the number of parallel environments"""
     num_eval_envs: int = 8
     """the number of parallel evaluation environments"""
-    buffer_size: float = 4e6
+    buffer_size: float = 1e6
     """the replay memory buffer size"""
     partial_reset: bool = True
     """toggle if the environments should perform partial resets"""
@@ -51,13 +51,13 @@ class Args:
     """the discount factor gamma"""
     tau: float = 0.015
     """target smoothing coefficient (default: 0.005)"""
-    batch_size: int = 4096
+    batch_size: int = 512
     """the batch size of sample from the reply memory"""
     learning_starts: int = 100
     """timestep to start learning"""
     policy_lr: float = 3e-4
     """the learning rate of the policy network optimizer"""
-    q_lr: float = 1e-3
+    q_lr: float = 6e-4
     """the learning rate of the Q network network optimizer"""
     policy_frequency: int = 2
     """the frequency of training policy (delayed)"""
