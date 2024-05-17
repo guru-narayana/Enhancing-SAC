@@ -58,6 +58,7 @@ class BaseBuffer(ABC):
         self.full = False
         self.device = get_device(device)
         self.n_envs = n_envs
+        self.started = False
 
     @staticmethod
     def swap_and_flatten(arr: np.ndarray) -> np.ndarray:
@@ -286,9 +287,6 @@ class PrioritizedReplayBuffer(BaseBuffer):
         action_space: spaces.Space,
         device: Union[th.device, str] = "auto",
         n_envs: int = 1,
-        alpha=0.6,
-        beta_start = 0.4,
-        beta_frames=100000
 
     ):
         super().__init__(buffer_size, observation_space, action_space, device, n_envs=n_envs)
@@ -299,10 +297,12 @@ class PrioritizedReplayBuffer(BaseBuffer):
         self.rewards = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.dones = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.args = args
-        self.alpha = alpha
-        self.beta_start = beta_start
-        self.beta_frames = beta_frames
+        self.alpha = self.args.per_alpha
+        self.beta_start = self.args.per_beta_start
+        self.beta_frames = self.args.per_beta_frames
         self.frame = 1
+        self.priorities = np.zeros((self.buffer_size,self.n_envs), dtype=np.float32)
+
     def beta_by_frame(self, frame_idx):
         return min(1.0, self.beta_start + frame_idx * (1.0 - self.beta_start) / self.beta_frames)
     
@@ -321,15 +321,35 @@ class PrioritizedReplayBuffer(BaseBuffer):
         self.actions[self.pos] = np.array(action)
         self.rewards[self.pos] = np.array(reward)
         self.dones[self.pos] = np.array(done)
+        self.priorities[self.pos] = np.ones(self.n_envs)*(np.max(self.priorities) if self.started else 1.0)
+        self.started = True
         self.pos += 1
         if self.pos == self.buffer_size:
             self.full = True
             self.pos = 0
 
+    #TODO: Implement the update priorities function
+    def update_priorities(self, sample_batch_inds,sample_env_indices, prios):
+        for b_idx,env_indx,prio in zip(sample_batch_inds,sample_env_indices, prios):
+            self.priorities[b_idx,env_indx] = abs(prio) 
+
+    def get_sample_indices(self, batch_size):
+        upper_bound = (self.buffer_size if self.full else self.pos)
+        priorities = self.priorities.reshape(-1)[:(upper_bound*self.n_envs)]
+        probs = priorities ** self.alpha
+        probs /= probs.sum()
+        index = np.random.choice(np.arange(priorities.size),batch_size, p=probs)
+        index_2d = np.unravel_index(index,(upper_bound,self.n_envs))
+        beta = self.beta_by_frame(self.frame)
+        self.frame+=1
+        weights  = (upper_bound*self.n_envs*probs[index]) ** (-beta)
+        weights /= weights.max() 
+        weights  = np.array(weights, dtype=np.float32) 
+        return index_2d[0], index_2d[1],weights
+
     def sample(self, batch_size: int, env: Optional[VecNormalize] = None) -> ReplayBufferSamples:
-        upper_bound = self.buffer_size if self.full else self.pos
-        batch_inds = np.random.randint(0, upper_bound, size=batch_size)
-        env_indices = np.random.randint(0, high=self.n_envs, size=(len(batch_inds),))
+
+        batch_inds, env_indices,weights = self.get_sample_indices(batch_size)
         next_obs = self.next_observations[batch_inds, env_indices, :]
         obs_sample = self.observations[batch_inds, env_indices, :]
         ac_sample = self.actions[batch_inds, env_indices, :]
@@ -343,4 +363,4 @@ class PrioritizedReplayBuffer(BaseBuffer):
             done_sample,
             reward_sample,
         )
-        return ReplayBufferSamples(*tuple(map(self.to_torch, data)))
+        return ReplayBufferSamples(*tuple(map(self.to_torch, data))), batch_inds, env_indices, weights

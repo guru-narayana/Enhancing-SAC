@@ -12,7 +12,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import tyro
-from buffer import ReplayBuffer
+from buffer import ReplayBuffer,PrioritizedReplayBuffer
 from torch.utils.tensorboard import SummaryWriter
 
 # ManiSkill specific imports
@@ -104,7 +104,7 @@ if __name__ == "__main__":
     actor_optimizer = optim.Adam(list(actor.parameters()), lr=args.policy_lr)
 
     # TODO: Change the buffer manamgement stratagy
-    rb = ReplayBuffer(
+    rb = PrioritizedReplayBuffer(
         args,
         args.buffer_size,
         envs.unwrapped.single_observation_space,
@@ -176,7 +176,8 @@ if __name__ == "__main__":
 
         # Training : update the network
         if global_step > args.learning_starts and not args.evaluate:
-            data = rb.sample(args.batch_size)
+            data, sample_batch_inds, sample_env_indices, sample_weights = rb.sample(args.batch_size)
+            sample_weights = torch.FloatTensor(sample_weights).to(device).unsqueeze(1)
             with torch.no_grad():
                 next_state_actions, next_state_log_pi, _ = actor.get_action(data.next_observations)
                 qf1_next_target = qf1_target(data.next_observations, next_state_actions)
@@ -186,15 +187,20 @@ if __name__ == "__main__":
 
             qf1_a_values = qf1(data.observations, data.actions).view(-1)
             qf2_a_values = qf2(data.observations, data.actions).view(-1)
-            qf1_loss = F.mse_loss(qf1_a_values, next_q_value)
-            qf2_loss = F.mse_loss(qf2_a_values, next_q_value)
+            qf1_error = next_q_value - qf1_a_values
+            qf2_error = next_q_value - qf2_a_values
+            qf1_loss = 0.5*(qf1_error.pow(2) * sample_weights).mean()
+            qf2_loss = 0.5*(qf2_error.pow(2) * sample_weights).mean()
             qf_loss = qf1_loss + qf2_loss
+            prios = abs(((qf1_error + qf2_error)/2.0 + 1e-5).squeeze())
+
 
             # optimize the model
             q_optimizer.zero_grad()
             qf_loss.backward()
             q_optimizer.step()
-
+            
+            rb.update_priorities(sample_batch_inds,sample_env_indices, prios.data.cpu().numpy())
             if global_step % args.policy_frequency == 0:  # TD 3 Delayed update support
                 for _ in range(
                     args.policy_frequency

@@ -3,4 +3,4 @@ runs/
 wandb/
 __pycache__/
 test.ipynb
-
+runs*

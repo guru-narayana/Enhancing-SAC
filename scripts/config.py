@@ -82,3 +82,11 @@ class Args:
     """if toggled, will use demonstrations"""
     demo_percent: float = 0.5
     """the percentage of the demonstrations to use"""
+
+    # PER parameters
+    per_alpha: float = 0.6
+    """alpha parameter for PER"""
+    per_beta_start: float = 0.4
+    """initial beta parameter for PER"""
+    per_beta_frames: int =100000
+    """number of frames over which beta is annealed"""
