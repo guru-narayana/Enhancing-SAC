@@ -18,13 +18,5 @@ To test the setup run the following command.
 python -m mani_skill.examples.demo_random_action
 ```
 
-
-Download the demos 
-
-```
-!python -m mani_skill.utils.download_demo "StackCube-v1" -o "demos"
-!python -m mani_skill.utils.download_demo "PickCube-v1" -o "demos"
-```
-
-
-Change the Wandb entity name in config.py
+## To Run
+Head to the main.ipynb and run each cell (if required change the name of the environment) to reproduce the results.
