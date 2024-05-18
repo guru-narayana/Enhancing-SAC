@@ -321,7 +321,14 @@ class PrioritizedReplayBuffer(BaseBuffer):
         self.actions[self.pos] = np.array(action)
         self.rewards[self.pos] = np.array(reward)
         self.dones[self.pos] = np.array(done)
-        self.priorities[self.pos] = np.ones(self.n_envs)*(np.max(self.priorities) if self.started else 1.0)
+        if self.started:
+            if self.args.use_max_priority:
+                max_prio = np.max(self.priorities)
+            else:
+                max_prio = np.mean(self.priorities) + self.args.sd_scale*np.std(self.priorities)
+        else:
+            max_prio = 1.0
+        self.priorities[self.pos] = np.ones(self.n_envs)*max_prio
         self.started = True
         self.pos += 1
         if self.pos == self.buffer_size:
@@ -350,16 +357,15 @@ class PrioritizedReplayBuffer(BaseBuffer):
     def sample(self, batch_size: int, env: Optional[VecNormalize] = None) -> ReplayBufferSamples:
 
         batch_inds, env_indices,weights = self.get_sample_indices(batch_size)
-        next_obs = self.next_observations[batch_inds, env_indices, :]
-        obs_sample = self.observations[batch_inds, env_indices, :]
+        next_obs = self._normalize_obs(self.next_observations[batch_inds, env_indices, :],env)
+        obs_sample = self._normalize_obs(self.observations[batch_inds, env_indices, :],env)
         ac_sample = self.actions[batch_inds, env_indices, :]
-        next_sample = next_obs
         done_sample = self.dones[batch_inds, env_indices].reshape(-1, 1)
         reward_sample = self._normalize_reward(self.rewards[batch_inds, env_indices].reshape(-1, 1), env)
         data = (
             obs_sample,
             ac_sample,
-            next_sample,
+            next_obs,
             done_sample,
             reward_sample,
         )

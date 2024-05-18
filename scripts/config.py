@@ -90,3 +90,7 @@ class Args:
     """initial beta parameter for PER"""
     per_beta_frames: int =100000
     """number of frames over which beta is annealed"""
+    use_max_priority: bool = False
+    """if toggled, will use max priority for PER"""
+    sd_scale: float = 0.6
+    """the scal of the standard deviation added to the PER priorities"""
