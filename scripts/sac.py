@@ -126,6 +126,7 @@ if __name__ == "__main__":
     done_count = 0
     avg_return = 0
     avg_length = 0
+    success = 0
     for global_step in range(args.total_timesteps):
 
         env_step = global_step*args.num_envs
@@ -144,10 +145,10 @@ if __name__ == "__main__":
             episodic_return += rewards
             episodic_length += 1
 
-
             if dones.any():
                 avg_return += torch.sum(episodic_return[dones]).item()
                 avg_length += torch.sum(episodic_length[dones]).item()
+                success += torch.sum(infos["success"]).item()
                 done_count += torch.sum(dones).item()
                 episodic_return[dones] = 0
                 episodic_length[dones] = 0
@@ -158,7 +159,7 @@ if __name__ == "__main__":
         else:
             actions, _, _ = actor.get_action(obs)
 
-            next_obs, rewards, terminations, truncations, _ = eval_envs.step(actions.cpu().detach().numpy())
+            next_obs, rewards, terminations, truncations, infos = eval_envs.step(actions.cpu().detach().numpy())
             dones = terminations|truncations
 
             if args.num_eval_envs == 1:
@@ -170,6 +171,7 @@ if __name__ == "__main__":
                 print(f"env_step={env_step}, episodic_return={sum(eval_rewards)}")
                 eval_rewards = []
                 next_obs, _ = eval_envs.reset(seed=args.seed)
+                print("success = ", infos["success"])
 
 
         obs = next_obs.clone()
@@ -235,11 +237,12 @@ if __name__ == "__main__":
                 writer.add_scalar("losses/alpha", alpha, env_step)
                 writer.add_scalar("returns/avg_episodic_return", avg_return/done_count, env_step)
                 writer.add_scalar("returns/avg_episodic_length", avg_length/done_count, env_step)
+                writer.add_scalar("returns/success_rate", success/done_count, env_step)
                 writer.add_scalar("charts/SPS", int(env_step / (time.time() - start_time)), env_step)
-                print(f"env_step={env_step}, episodic_return={avg_return/done_count}, episodic_length={avg_length/done_count}")
+                print(f"env_step={env_step}, episodic_return={avg_return/done_count}, episodic_length={avg_length/done_count}, success_rate={success/done_count}")
                 print("Actor Loss:", actor_loss.item(), "Q Loss:", qf_loss.item() / 2.0, "Alpha:", alpha,end=" ")
                 print("Q1 Loss:", qf1_loss.item(), "Q1 Value:", qf1_a_values.mean().item(), "Q2 Value:", qf2_a_values.mean().item(),"\n")
-                done_count = avg_return = avg_length = 0
+                done_count = avg_return = avg_length = success = 0
                 if args.autotune:
                     writer.add_scalar("losses/alpha_loss", alpha_loss.item(), env_step)
 
