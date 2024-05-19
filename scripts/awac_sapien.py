@@ -1,24 +1,20 @@
 import os
 import random
 import time
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple
 from config import Args
 import gymnasium as gym
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import torch.optim as optim
 import tyro
 from buffer import ReplayBuffer
 from torch.utils.tensorboard import SummaryWriter
 from copy import deepcopy
 import wandb
-from tqdm import trange
-from torch.utils.data import DataLoader, TensorDataset
 
 # ManiSkill specific imports
-import mani_skill.envs
 from mani_skill.utils.wrappers.flatten import FlattenActionSpaceWrapper
 from mani_skill.utils.wrappers.record import RecordEpisode
 from mani_skill.vector.wrappers.gymnasium import ManiSkillVectorEnv
