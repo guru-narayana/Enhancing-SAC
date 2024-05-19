@@ -370,3 +370,120 @@ class PrioritizedReplayBuffer(BaseBuffer):
             reward_sample,
         )
         return ReplayBufferSamples(*tuple(map(self.to_torch, data))), batch_inds, env_indices, weights
+    
+
+
+class Demos_ReplayBuffer(BaseBuffer):
+
+    observations: np.ndarray
+    next_observations: np.ndarray
+    actions: np.ndarray
+    rewards: np.ndarray
+    dones: np.ndarray
+
+    demo_observations: np.ndarray
+    demo_next_observations: np.ndarray
+    demo_actions: np.ndarray
+    demo_rewards: np.ndarray
+    demo_dones: np.ndarray
+
+    def __init__(
+        self,
+        args,
+        buffer_size: int,
+        observation_space: spaces.Space,
+        action_space: spaces.Space,
+        device: Union[th.device, str] = "auto",
+        n_envs: int = 1,
+
+    ):
+        super().__init__(buffer_size, observation_space, action_space, device, n_envs=n_envs)
+        self.buffer_size = max(buffer_size // n_envs, 1)
+        self.observations = np.zeros((self.buffer_size, self.n_envs, *self.obs_shape), dtype=observation_space.dtype)
+        self.next_observations = np.zeros((self.buffer_size, self.n_envs, *self.obs_shape), dtype=observation_space.dtype)
+        self.actions = np.zeros((self.buffer_size, self.n_envs, self.action_dim), dtype=action_space.dtype)
+        self.rewards = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
+        self.dones = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
+        self.args = args
+        if args.use_demo:
+            self.add_demo_data()
+
+    def add_demo_data(self):
+        dataset = ManiSkillTrajectoryDataset(dataset_file=f"demos/{self.args.env_id}/teleop/trajectory.state.pd_joint_delta_pos.h5")
+        self.demo_observations = np.array(dataset.data["traj_0"]["obs"]).squeeze(1)[:-1]
+        self.demo_next_observations = np.array(dataset.data["traj_0"]["obs"]).squeeze(1)[1:]
+        self.demo_actions = np.array(dataset.data["traj_0"]["actions"])
+        self.demo_rewards = np.array(dataset.data["traj_0"]["rewards"])
+        self.demo_dones =  np.array(dataset.data["traj_0"]["terminated"])
+        for eps_id in range(1,len(dataset.episodes)):
+            eps = dataset.episodes[eps_id]
+            trajectory = dataset.data[f"traj_{eps['episode_id']}"]
+            self.demo_observations = np.concatenate((self.demo_observations, np.array(trajectory["obs"]).squeeze(1)[:-1]), axis=0)
+            self.demo_next_observations = np.concatenate((self.demo_next_observations, np.array(trajectory["obs"]).squeeze(1)[1:]), axis=0)
+            self.demo_actions = np.concatenate((self.demo_actions, np.array(trajectory["actions"])), axis=0)
+            self.demo_rewards = np.concatenate((self.demo_rewards, np.array(trajectory["rewards"])), axis=0)
+            self.demo_dones = np.concatenate((self.demo_dones, np.array(trajectory["terminated"])), axis=0)
+        print(f"Demo data loaded with {len(self.demo_observations)} samples")
+        self.demo_observations = self.demo_observations[self.demo_dones==0]
+        self.demo_next_observations = self.demo_next_observations[self.demo_dones==0]
+        self.demo_actions = self.demo_actions[self.demo_dones==0]
+        self.demo_rewards = self.demo_rewards[self.demo_dones==0].reshape(-1,1)
+        self.demo_dones = self.demo_dones[self.demo_dones==0].reshape(-1,1)
+        print(f"Demo data loaded with {len(self.demo_observations)} samples")
+        print(self.demo_observations.shape,self.demo_actions.shape,self.demo_next_observations.shape,self.demo_dones.shape,self.demo_rewards.shape)
+
+    def add(
+        self,
+        obs: np.ndarray,
+        next_obs: np.ndarray,
+        action: np.ndarray,
+        reward: np.ndarray,
+        done: np.ndarray,
+    ) -> None:
+        action = action.reshape((self.n_envs, self.action_dim))
+        self.observations[self.pos] = np.array(obs)
+        self.next_observations[self.pos] = np.array(next_obs)
+        self.actions[self.pos] = np.array(action)
+        self.rewards[self.pos] = np.array(reward)
+        self.dones[self.pos] = np.array(done)
+        self.pos += 1
+        if self.pos == self.buffer_size:
+            self.full = True
+            self.pos = 0
+
+    def sample(self, batch_size: int, env: Optional[VecNormalize] = None) -> ReplayBufferSamples:
+        if self.args.use_demo:
+            demo_bs = int(batch_size*self.args.demo_percent)
+            batch_size -= demo_bs
+        upper_bound = self.buffer_size if self.full else self.pos
+        batch_inds = np.random.randint(0, upper_bound, size=batch_size)
+        env_indices = np.random.randint(0, high=self.n_envs, size=(len(batch_inds),))
+        next_obs = self._normalize_obs(self.next_observations[batch_inds, env_indices, :],env)
+        obs_sample = self._normalize_obs(self.observations[batch_inds, env_indices, :],env)
+        ac_sample = self.actions[batch_inds, env_indices, :]
+        next_sample = next_obs
+        done_sample = self.dones[batch_inds, env_indices].reshape(-1, 1)
+        reward_sample = self._normalize_reward(self.rewards[batch_inds, env_indices].reshape(-1, 1),env)
+        if self.args.use_demo:
+            demo_inds = np.arange(len(self.demo_observations))
+            np.random.shuffle(demo_inds)
+            suffle_demo_inds = demo_inds[:demo_bs]
+            demo_obs_sample = self._normalize_obs(self.demo_observations[suffle_demo_inds, :],env)
+            demo_ac_sample = self.demo_actions[suffle_demo_inds, :]
+            demo_next_sample = self._normalize_obs(self.demo_next_observations[suffle_demo_inds, :],env)
+            demo_done_sample = self.demo_dones[suffle_demo_inds, :].reshape(-1, 1)
+            demo_reward_sample = self._normalize_reward(self.demo_rewards[suffle_demo_inds, :], env)
+            obs_sample = np.concatenate((demo_obs_sample, obs_sample), axis=0)
+            ac_sample = np.concatenate((demo_ac_sample, ac_sample), axis=0)
+            next_sample = np.concatenate((demo_next_sample, next_sample), axis=0)
+            done_sample = np.concatenate((demo_done_sample, done_sample), axis=0)
+            reward_sample = np.concatenate((demo_reward_sample, reward_sample), axis=0)
+        data = (
+            obs_sample,
+            ac_sample,
+            reward_sample,
+            next_sample,
+            done_sample,
+        )
+        return ReplayBufferSamples(*tuple(map(self.to_torch, data)))
+

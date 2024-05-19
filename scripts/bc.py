@@ -14,7 +14,6 @@ from torch.utils.tensorboard import SummaryWriter
 import wandb
 
 # ManiSkill specific imports
-import mani_skill.envs
 from mani_skill.utils.wrappers.flatten import FlattenActionSpaceWrapper
 from mani_skill.utils.wrappers.record import RecordEpisode
 from mani_skill.vector.wrappers.gymnasium import ManiSkillVectorEnv
@@ -300,9 +299,10 @@ def train(args: Args):
                 print("success = ", infos["success"])
 
            
-    envs.close()
-    wandb.finish()
-    writer.close()
+    if not args.evaluate:
+        envs.close()
+        wandb.finish()
+        writer.close()
 
 
 if __name__ == "__main__":

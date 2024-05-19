@@ -9,7 +9,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import tyro
-from buffer import ReplayBuffer
+from buffer import Demos_ReplayBuffer as ReplayBuffer
 from torch.utils.tensorboard import SummaryWriter
 from copy import deepcopy
 import wandb
@@ -24,34 +24,38 @@ TensorBatch = List[torch.Tensor]
 
 # Define actor and critic architectures (fill with appropriate layers and dimensions)
 
+def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
+    torch.nn.init.orthogonal_(layer.weight, std)
+    torch.nn.init.constant_(layer.bias, bias_const)
+    return layer
+
 class Actor(nn.Module):
     def __init__(self, env):
         super().__init__()
-        state_dim = np.array(env.unwrapped.single_observation_space.shape).prod()
-        action_dim = np.prod(env.unwrapped.single_action_space.shape)
-        hidden_dim = 256  # Standard hidden layer size
-
         # Hyperparameters for action distribution
         self._min_log_std = -5.0
         self._max_log_std = 2.0
-        self._min_action = env.unwrapped.single_action_space.low
-        self._max_action = env.unwrapped.single_action_space.high
+        self._min_action = torch.tensor(env.unwrapped.single_action_space.low).to("cuda")
+        self._max_action = torch.tensor(env.unwrapped.single_action_space.high).to("cuda")
 
         # Network architecture
-        self._mlp = nn.Sequential(
-            nn.Linear(state_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, action_dim),
+        self.fc1 = nn.Sequential(
+            layer_init(nn.Linear(np.array(env.unwrapped.single_observation_space.shape).prod(), 256)),
+            nn.Tanh(),
+            layer_init(nn.Linear(256, 256)),
+            nn.Tanh(),
+            layer_init(nn.Linear(256, 256)),
+            nn.Tanh(),
         )
-        self._log_std = nn.Parameter(torch.zeros(action_dim, dtype=torch.float32))
-
+        self.fc_mean = nn.Linear(256, np.prod(env.unwrapped.single_action_space.shape))
+        self.fc_logstd = nn.Linear(256, np.prod(env.unwrapped.single_action_space.shape))
+        
     def _get_policy(self, state: torch.Tensor) -> torch.distributions.Distribution:
-        mean = self._mlp(state)
-        log_std = self._log_std.clamp(self._min_log_std, self._max_log_std)
+        x = self.fc1(state)
+        mean = self.fc_mean(x)
+        log_std = self.fc_logstd(x)
+        log_std = torch.tanh(log_std)
+        log_std = self._min_log_std  + 0.5 * (self._max_log_std  - self._min_log_std ) * (log_std + 1)  # From SpinUp / Denis Yarats
         return torch.distributions.Normal(mean, log_std.exp())
 
     def log_prob(self, state: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
@@ -67,7 +71,7 @@ class Actor(nn.Module):
 
     def act(self, state: torch.Tensor) -> torch.Tensor:
         policy = self._get_policy(state)
-        return policy.sample() if self._mlp.training else policy.mean
+        return policy.sample() if self.fc1.training else policy.mean
 
 
 class Critic(nn.Module):
@@ -234,6 +238,25 @@ def load_demonstrations(path, env_id):
             demo_data[key] = torch.tensor(demo_data[key], dtype=torch.float32).reshape(-1)
     return (demo_data['observations'], demo_data['actions'], demo_data['rewards'], demo_data['next_observations'], demo_data['dones'])
 
+
+def save_checkpoint(actor, critic_1, critic_2, step, checkpoint_path):
+    os.makedirs(checkpoint_path, exist_ok=True)
+    torch.save({
+        'actor_state_dict': actor.state_dict(),
+        'critic1_state_dict': critic_1.state_dict(),
+        'critic2_state_dict': critic_2.state_dict(),
+        'step': step
+    }, os.path.join(checkpoint_path, f'checkpoint_{step}.pt'))
+
+def load_model(actor, critic1, critic2, path):
+    checkpoint = torch.load(path)
+    actor.load_state_dict(checkpoint['actor_state_dict'])
+    critic1.load_state_dict(checkpoint['critic1_state_dict'])
+    critic2.load_state_dict(checkpoint['critic2_state_dict'])
+ 
+    return actor
+
+
 def train(args: Args):
     set_seed(args.seed)
 
@@ -267,15 +290,6 @@ def train(args: Args):
     critic_1 = Critic(envs).to(device)
     critic_2 = Critic(envs).to(device)
 
-    # Load demonstrations
-    obs, actions, rewards, next_obs, dones = load_demonstrations(args.demos_path, args.env_id)
-    
-    print(f"Observations shape: {obs.shape}")
-    print(f"Actions shape: {actions.shape}")
-    print(f"Rewards shape: {rewards.shape}")
-    print(f"Next observations shape: {next_obs.shape}")
-    print(f"Dones shape: {dones.shape}")
-
     # Replay buffer initialization and load demonstrations
     replay_buffer = ReplayBuffer(
         args,
@@ -286,46 +300,47 @@ def train(args: Args):
         n_envs=args.num_envs
     )
 
-    # replay_buffer.add(obs.cpu().detach().numpy(), next_obs.cpu().detach().numpy(), actions.cpu().detach().numpy(), rewards.cpu().detach().numpy(), dones.cpu().detach().numpy())
-    replay_buffer.add(obs, next_obs, actions, rewards, dones)
 
     # Optimizers
     actor_optimizer = optim.Adam(actor.parameters(), lr=args.policy_lr)
     critic_1_optimizer = optim.Adam(critic_1.parameters(), lr=args.q_lr)
     critic_2_optimizer = optim.Adam(critic_2.parameters(), lr=args.q_lr)
 
-    awac = AdvantageWeightedActorCritic(actor, critic_1, critic_2, actor_optimizer, critic_1_optimizer, critic_2_optimizer, gamma=args.gamma, tau=args.tau)
+    awac = AdvantageWeightedActorCritic(actor, actor_optimizer, critic_1, critic_1_optimizer, critic_2, critic_2_optimizer, gamma=args.gamma, tau=args.tau)
 
-    # WandB setup
-    wandb.init(project=args.wandb_project_name, config=args)
-    run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
-    writer = SummaryWriter(log_dir=f"runs/{run_name}")
 
+    if not args.evaluate:            
+        # Load demonstrations
+        obs, actions, rewards, next_obs, dones = load_demonstrations(args.demos_path, args.env_id)        
+        print(f"Loaded {len(obs)} demonstrations")
+        replay_buffer.add(obs, next_obs, actions, rewards, dones)
+
+
+    if args.checkpoint!="":
+        actor= load_model(actor, critic_1, critic_2, args.checkpoint)
+        print(f"Model loaded from {args.checkpoint}")
+    
     # Additional tracking for episodic rewards and lengths
     episodic_return = torch.zeros(args.num_envs).to(device)
     episodic_length = torch.zeros(args.num_envs).to(device)
-    done_count = 0
+    done_count = 1
     avg_return = 0
     avg_length = 0
+    success = 0
+    eval_rewards = []
 
     if args.evaluate:
         obs, _ = eval_envs.reset(seed=args.seed)
     else:
         obs, _ = envs.reset(seed=args.seed)
-    # obs = obs[0]  # Extract the tensor from the tuple (assuming it's always the first element)
 
     # Training loop
-    for global_step in range(args.total_timesteps):
-
-        step = global_step*args.num_envs
-
+    for step in range(args.total_timesteps):
         if not args.evaluate:
 
-            print("OBS",obs.shape)
-            action = actor.act(obs.to(device)).cpu().numpy()
-            print("ACTION!",action.shape)
+            action = actor.act(obs)
             next_obs, rewards, terminations, truncations, infos = envs.step(action)
-            print("NEXT OBS",next_obs.shape)
+
             dones = truncations | terminations
             episodic_return += rewards
             episodic_length += 1
@@ -333,18 +348,20 @@ def train(args: Args):
             if dones.any():
                 avg_return += torch.sum(episodic_return[dones]).item()
                 avg_length += torch.sum(episodic_length[dones]).item()
+                success += torch.sum(infos["success"]).item()                
                 done_count += torch.sum(dones).item()
                 episodic_return[dones] = 0
                 episodic_length[dones] = 0
             
-            replay_buffer.add(obs.cpu().detach().numpy(), next_obs.cpu().detach().numpy(), action, rewards.cpu().detach().numpy(), terminations.cpu().detach().numpy())
+            # replay_buffer.add(obs.cpu().detach().numpy(), next_obs.cpu().detach().numpy(), action, rewards.cpu().detach().numpy(), terminations.cpu().detach().numpy())
                 
-            print("HEYYYYYY!!", replay_buffer.size)
             obs = next_obs.clone()
 
             # Perform update every episode end
             batch = replay_buffer.sample(args.batch_size)
-            critic_loss, actor_loss = awac.update(batch)
+            result = awac.update(batch)
+            critic_loss = result["critic_loss"] 
+            actor_loss = result["actor_loss"]
 
             # Logging
             wandb.log({
@@ -355,59 +372,34 @@ def train(args: Args):
             })
             writer.add_scalar("Loss/Critic", critic_loss, step)
             writer.add_scalar("Loss/Actor", actor_loss, step)
-            writer.add_scalar("Performance/Episodic Reward", episodic_return, step)
-            writer.add_scalar("Performance/Episodic Length", episodic_length, step)
+            writer.add_scalar("Performance/Average Return", avg_return/done_count, step)
+            writer.add_scalar("Performance/Average Length", avg_length/done_count, step)
+            writer.add_scalar("Performance/Success Rate", success/done_count, step)
 
-            # Evaluation and checkpointing
-            if step % args.eval_frequency == 0:
-                eval_rewards = evaluate_actor(envs, actor, device, args.n_test_episodes)
-                wandb.log({"evaluation_rewards": np.mean(eval_rewards)})
-                writer.add_scalar("Performance/Evaluation", np.mean(eval_rewards), step)
-
-            if step % args.checkpoint_interval == 0:
-                save_checkpoint(actor, critic_1, critic_2, step, args.checkpoint_path)
-
+            if step % args.model_save_interval == 0:
+                save_checkpoint(actor, critic_1, critic_2, step, f"runs/{run_name}")
 
         else:
-            action = actor.act(obs.to(device)).cpu().numpy()
-            next_obs, rewards, terminations, truncations, infos = eval_envs.step(action)
-            dones = truncations | terminations
+            actions = actor.act(obs)
 
+            next_obs, rewards, terminations, truncations, infos = eval_envs.step(actions.cpu().detach().numpy())
+            dones = terminations|truncations
+
+            if args.num_eval_envs == 1:
+                eval_rewards.append(rewards.item())
+            else:
+                eval_rewards.append(rewards.mean().item())
+            
             if dones.any():
                 print(f"env_step={step}, episodic_return={sum(eval_rewards)}")
                 eval_rewards = []
                 next_obs, _ = eval_envs.reset(seed=args.seed)
-            
-            obs = next_obs.clone()
+                print("success = ", infos["success"])
 
-           
-    envs.close()
-    wandb.finish()
-    writer.close()
-
-def save_checkpoint(actor, critic_1, critic_2, step, checkpoint_path):
-    os.makedirs(checkpoint_path, exist_ok=True)
-    torch.save({
-        'actor_state_dict': actor.state_dict(),
-        'critic1_state_dict': critic_1.state_dict(),
-        'critic2_state_dict': critic_2.state_dict(),
-        'step': step
-    }, os.path.join(checkpoint_path, f'checkpoint_{step}.pt'))
-
-def evaluate_actor(env, actor, device, num_episodes=10):
-    eval_rewards = []
-    for _ in range(num_episodes):
-        state = env.reset()
-        done = False
-        total_reward = 0
-        while not done:
-            action = actor.act(state.to(device)).cpu().numpy() # Assumed actor has an act method
-            state, rewards, terminations, truncations, infos = env.step(action)
-            total_reward += rewards
-            done = truncations | terminations
-
-        eval_rewards.append(torch.sum(total_reward[done]).item())
-    return eval_rewards
+    if not args.evaluate:
+        envs.close()
+        wandb.finish()
+        writer.close()
 
 if __name__ == "__main__":
     args = tyro.cli(Args)

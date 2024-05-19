@@ -26,6 +26,8 @@ class Args:
     """if toggled, only runs evaluation with the given model checkpoint and saves the evaluation trajectories"""
     checkpoint: str = ""
     """path to a pretrained checkpoint file to start evaluation/training from"""
+    demos_path: str = ""    
+    """path to the demonstrations file"""
 
     # Algorithm specific arguments
     env_id: str = "PickCube-v1"
@@ -34,7 +36,7 @@ class Args:
     """total timesteps of the experiments"""
     learning_rate: float = 3e-3
     """the learning rate of the optimizer"""
-    num_envs: int = 512
+    num_envs: int = 1058
     """the number of parallel environments"""
     num_eval_envs: int = 8
     """the number of parallel evaluation environments"""
