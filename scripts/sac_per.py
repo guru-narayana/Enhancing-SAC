@@ -151,6 +151,8 @@ if __name__ == "__main__":
                 avg_length += torch.sum(episodic_length[dones]).item()
                 success_count += torch.sum(infos["success"]).item()
                 done_count += torch.sum(dones).item()
+                if args.RESCALE_REWARDS:
+                    rewards[infos["success"]]*=100
                 episodic_return[dones] = 0
                 episodic_length[dones] = 0
 

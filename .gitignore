@@ -1,6 +1,8 @@
 demos/
-runs/
+*.pt
+*.pth
+*.mp4
 wandb/
 __pycache__/
 test.ipynb
-runs*
+*.zip

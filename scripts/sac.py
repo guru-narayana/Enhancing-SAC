@@ -148,6 +148,8 @@ if __name__ == "__main__":
             if dones.any():
                 avg_return += torch.sum(episodic_return[dones]).item()
                 avg_length += torch.sum(episodic_length[dones]).item()
+                if args.RESCALE_REWARDS:
+                    rewards[infos["success"]]*=100
                 success += torch.sum(infos["success"]).item()
                 done_count += torch.sum(dones).item()
                 episodic_return[dones] = 0
@@ -170,7 +172,6 @@ if __name__ == "__main__":
             if dones.any():
                 print(f"env_step={env_step}, episodic_return={sum(eval_rewards)}")
                 eval_rewards = []
-                next_obs, _ = eval_envs.reset(seed=args.seed)
                 print("success = ", infos["success"])
 
 

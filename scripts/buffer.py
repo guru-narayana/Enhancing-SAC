@@ -197,6 +197,7 @@ class ReplayBuffer(BaseBuffer):
         self.demo_actions = np.array(dataset.data["traj_0"]["actions"])
         self.demo_rewards = np.array(dataset.data["traj_0"]["rewards"])
         self.demo_dones =  np.array(dataset.data["traj_0"]["terminated"])
+        self.success = np.array(dataset.data["traj_0"]["success"])
         for eps_id in range(1,len(dataset.episodes)):
             eps = dataset.episodes[eps_id]
             trajectory = dataset.data[f"traj_{eps['episode_id']}"]
@@ -205,10 +206,13 @@ class ReplayBuffer(BaseBuffer):
             self.demo_actions = np.concatenate((self.demo_actions, np.array(trajectory["actions"])), axis=0)
             self.demo_rewards = np.concatenate((self.demo_rewards, np.array(trajectory["rewards"])), axis=0)
             self.demo_dones = np.concatenate((self.demo_dones, np.array(trajectory["terminated"])), axis=0)
+            self.success = np.concatenate((self.success, np.array(trajectory["success"])), axis=0)
         print(f"Demo data loaded with {len(self.demo_observations)} samples")
         self.demo_observations = self.demo_observations[self.demo_dones==0]
         self.demo_next_observations = self.demo_next_observations[self.demo_dones==0]
         self.demo_actions = self.demo_actions[self.demo_dones==0]
+        if self.args.RESCALE_REWARDS:
+            self.demo_rewards[self.success] *=100
         self.demo_rewards = self.demo_rewards[self.demo_dones==0].reshape(-1,1)
         self.demo_dones = self.demo_dones[self.demo_dones==0].reshape(-1,1)
         print(f"Demo data loaded with {len(self.demo_observations)} samples")
