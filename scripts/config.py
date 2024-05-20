@@ -26,6 +26,8 @@ class Args:
     """if toggled, only runs evaluation with the given model checkpoint and saves the evaluation trajectories"""
     checkpoint: str = ""
     """path to a pretrained checkpoint file to start evaluation/training from"""
+    demos_path: str = ""    
+    """path to the demonstrations file"""
 
     # Algorithm specific arguments
     env_id: str = "PickCube-v1"
@@ -34,7 +36,7 @@ class Args:
     """total timesteps of the experiments"""
     learning_rate: float = 3e-3
     """the learning rate of the optimizer"""
-    num_envs: int = 512
+    num_envs: int = 889
     """the number of parallel environments"""
     num_eval_envs: int = 8
     """the number of parallel evaluation environments"""
@@ -51,13 +53,13 @@ class Args:
     """the discount factor gamma"""
     tau: float = 0.015
     """target smoothing coefficient (default: 0.005)"""
-    batch_size: int = 512
+    batch_size: int = 1024
     """the batch size of sample from the reply memory"""
     learning_starts: int = 100
     """timestep to start learning"""
     policy_lr: float = 3e-4
     """the learning rate of the policy network optimizer"""
-    q_lr: float = 6e-4
+    q_lr: float = 3e-4
     """the learning rate of the Q network network optimizer"""
     policy_frequency: int = 2
     """the frequency of training policy (delayed)"""
