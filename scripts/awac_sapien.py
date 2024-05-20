@@ -221,22 +221,30 @@ def set_seed(seed: int, env: Optional[gym.Env] = None, deterministic_torch: bool
 # Load demonstrations
 def load_demonstrations(path, env_id):
     dataset = ManiSkillTrajectoryDataset(dataset_file=f"{path}/{env_id}/teleop/trajectory.state.pd_joint_delta_pos.h5")
-    demo_data = {'observations': [], 'actions': [], 'rewards': [], 'next_observations': [], 'dones': []}
-    for eps_id in range(len(dataset.episodes)):
-        trajectory = dataset.data[f"traj_{eps_id}"]
-        demo_data['observations'].append(trajectory["obs"][:-1].squeeze(1))
-        demo_data['actions'].append(trajectory["actions"])
-        demo_data['rewards'].append(trajectory["rewards"])
-        demo_data['next_observations'].append(trajectory["obs"][1:].squeeze(1))
-        demo_data['dones'].append(trajectory["terminated"])
-    for key in demo_data:
-        demo_data[key] = np.concatenate(demo_data[key], axis=0)
-        if key != 'dones':
-            demo_data[key] = torch.tensor(demo_data[key], dtype=torch.float32)
-        else:
-            # Ensure dones are flat
-            demo_data[key] = torch.tensor(demo_data[key], dtype=torch.float32).reshape(-1)
-    return (demo_data['observations'], demo_data['actions'], demo_data['rewards'], demo_data['next_observations'], demo_data['dones'])
+    demo_observations = np.array(dataset.data["traj_0"]["obs"]).squeeze(1)[:-1]
+    demo_next_observations = np.array(dataset.data["traj_0"]["obs"]).squeeze(1)[1:]
+    demo_actions = np.array(dataset.data["traj_0"]["actions"])
+    demo_rewards = np.array(dataset.data["traj_0"]["rewards"])
+    demo_dones =  np.array(dataset.data["traj_0"]["terminated"])
+    for eps_id in range(1,len(dataset.episodes)):
+        eps = dataset.episodes[eps_id]
+        trajectory = dataset.data[f"traj_{eps['episode_id']}"]
+        demo_observations = np.concatenate((demo_observations, np.array(trajectory["obs"]).squeeze(1)[:-1]), axis=0)
+        demo_next_observations = np.concatenate((demo_next_observations, np.array(trajectory["obs"]).squeeze(1)[1:]), axis=0)
+        demo_actions = np.concatenate((demo_actions, np.array(trajectory["actions"])), axis=0)
+        demo_rewards = np.concatenate((demo_rewards, np.array(trajectory["rewards"])), axis=0)
+        demo_dones = np.concatenate((demo_dones, np.array(trajectory["terminated"])), axis=0)
+    
+    print(f"Demo data loaded with {len(demo_observations)} samples")
+    demo_observations = demo_observations[demo_dones==0]
+    demo_next_observations = demo_next_observations[demo_dones==0]
+    demo_actions = demo_actions[demo_dones==0]
+    demo_rewards = demo_rewards[demo_dones==0].reshape(-1,1)
+    demo_dones = demo_dones[demo_dones==0].reshape(-1,1)
+    print(f"Demo data loaded with {len(demo_observations)} samples")
+    print(demo_observations.shape,demo_actions.shape,demo_next_observations.shape,demo_dones.shape,demo_rewards.shape)
+
+    return (demo_observations, demo_actions, demo_rewards, demo_next_observations, demo_dones)
 
 
 def save_checkpoint(actor, critic_1, critic_2, step, checkpoint_path):
@@ -313,7 +321,7 @@ def train(args: Args):
         # Load demonstrations
         obs, actions, rewards, next_obs, dones = load_demonstrations(args.demos_path, args.env_id)        
         print(f"Loaded {len(obs)} demonstrations")
-        replay_buffer.add(obs, next_obs, actions, rewards, dones)
+        replay_buffer.add(obs, actions, rewards, next_obs, dones)
 
 
     if args.checkpoint!="":
@@ -329,17 +337,19 @@ def train(args: Args):
     success = 0
     eval_rewards = []
 
+    start_time = time.time()
     if args.evaluate:
         obs, _ = eval_envs.reset(seed=args.seed)
     else:
         obs, _ = envs.reset(seed=args.seed)
 
     # Training loop
-    for step in range(args.total_timesteps):
+    for global_step in range(args.total_timesteps):
+        step = global_step * args.num_envs
         if not args.evaluate:
 
-            action = actor.act(obs)
-            next_obs, rewards, terminations, truncations, infos = envs.step(action)
+            actions = actor.act(obs)
+            next_obs, rewards, terminations, truncations, infos = envs.step(actions)
 
             dones = truncations | terminations
             episodic_return += rewards
@@ -353,7 +363,7 @@ def train(args: Args):
                 episodic_return[dones] = 0
                 episodic_length[dones] = 0
             
-            # replay_buffer.add(obs.cpu().detach().numpy(), next_obs.cpu().detach().numpy(), action, rewards.cpu().detach().numpy(), terminations.cpu().detach().numpy())
+            # replay_buffer.add(obs.cpu().detach().numpy(), actions.cpu().detach().numpy(), rewards.cpu().detach().numpy(), next_obs.cpu().detach().numpy(), dones.cpu().detach().numpy())
                 
             obs = next_obs.clone()
 
@@ -363,18 +373,14 @@ def train(args: Args):
             critic_loss = result["critic_loss"] 
             actor_loss = result["actor_loss"]
 
-            # Logging
-            wandb.log({
-                "critic_loss": critic_loss,
-                "actor_loss": actor_loss,
-                "episodic_reward": episodic_return,
-                "episodic_length": episodic_length
-            })
-            writer.add_scalar("Loss/Critic", critic_loss, step)
-            writer.add_scalar("Loss/Actor", actor_loss, step)
-            writer.add_scalar("Performance/Average Return", avg_return/done_count, step)
-            writer.add_scalar("Performance/Average Length", avg_length/done_count, step)
-            writer.add_scalar("Performance/Success Rate", success/done_count, step)
+            if global_step % 200 == 0 and writer is not None:
+                writer.add_scalar("Loss/Critic", critic_loss, step)
+                writer.add_scalar("Loss/Actor", actor_loss, step)
+                writer.add_scalar("Performance/Average Return", avg_return/done_count, step)
+                writer.add_scalar("Performance/Average Length", avg_length/done_count, step)
+                writer.add_scalar("Performance/Success Rate", success/done_count, step)
+                writer.add_scalar("charts/SPS", int(step / (time.time() - start_time)), step)
+                done_count = avg_return = avg_length = success = 0
 
             if step % args.model_save_interval == 0:
                 save_checkpoint(actor, critic_1, critic_2, step, f"runs/{run_name}")
@@ -382,7 +388,7 @@ def train(args: Args):
         else:
             actions = actor.act(obs)
 
-            next_obs, rewards, terminations, truncations, infos = eval_envs.step(actions.cpu().detach().numpy())
+            next_obs, rewards, terminations, truncations, infos = eval_envs.step(actions)
             dones = terminations|truncations
 
             if args.num_eval_envs == 1:
@@ -395,6 +401,8 @@ def train(args: Args):
                 eval_rewards = []
                 next_obs, _ = eval_envs.reset(seed=args.seed)
                 print("success = ", infos["success"])
+            
+            obs = next_obs.clone()
 
     if not args.evaluate:
         envs.close()

@@ -435,17 +435,17 @@ class Demos_ReplayBuffer(BaseBuffer):
     def add(
         self,
         obs: np.ndarray,
-        next_obs: np.ndarray,
         action: np.ndarray,
         reward: np.ndarray,
+        next_obs: np.ndarray,
         done: np.ndarray,
     ) -> None:
         action = action.reshape((self.n_envs, self.action_dim))
         self.observations[self.pos] = np.array(obs)
         self.next_observations[self.pos] = np.array(next_obs)
         self.actions[self.pos] = np.array(action)
-        self.rewards[self.pos] = np.array(reward)
-        self.dones[self.pos] = np.array(done)
+        self.rewards[self.pos] = np.array(reward) if reward.ndim==1 else np.array(reward).squeeze(1)
+        self.dones[self.pos] = np.array(done) if done.ndim==1 else np.array(done).squeeze(1)
         self.pos += 1
         if self.pos == self.buffer_size:
             self.full = True

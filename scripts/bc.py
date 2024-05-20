@@ -208,7 +208,7 @@ def train(args: Args):
         # Load demonstrations
         obs, actions, rewards, next_obs, dones = load_demonstrations(args.demos_path, args.env_id)        
         print(f"Loaded {len(obs)} demonstrations")
-        replay_buffer.add(obs, next_obs, actions, rewards, dones)
+        replay_buffer.add(obs, actions, rewards, next_obs, dones)
 
 
     if args.checkpoint!="":
@@ -229,6 +229,7 @@ def train(args: Args):
     else:
         obs, _ = envs.reset(seed=args.seed)
 
+    start_time = time.time()
     # Training loop
     for step in range(args.total_timesteps):
 
@@ -237,7 +238,6 @@ def train(args: Args):
             # Perform update every episode end
             batch = replay_buffer.sample(args.batch_size)
             output = trainer.train(batch)
-            # critic_loss = output["critic_loss"]
             actor_loss = output["actor_loss"]
 
             actions = actor.act(obs)
@@ -275,6 +275,7 @@ def train(args: Args):
             writer.add_scalar("Performance/Average Return", avg_return/done_count, step)
             writer.add_scalar("Performance/Average Length", avg_length/done_count, step)
             writer.add_scalar("Performance/Success Rate", success/done_count, step)
+            writer.add_scalar("charts/SPS", int(step / (time.time() - start_time)), step)
 
             if step % args.model_save_interval == 0:
                 save_checkpoint(actor, step, f"runs/{run_name}")
@@ -297,6 +298,8 @@ def train(args: Args):
                 eval_rewards = []
                 next_obs, _ = eval_envs.reset(seed=args.seed)
                 print("success = ", infos["success"])
+
+            obs = next_obs.clone()
 
            
     if not args.evaluate:
