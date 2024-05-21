@@ -171,6 +171,8 @@ if __name__ == "__main__":
             
             if dones.any():
                 print(f"env_step={env_step}, episodic_return={sum(eval_rewards)}")
+                success += torch.sum(infos["success"]).item()
+                done_count += torch.sum(dones).item()
                 eval_rewards = []
                 print("success = ", infos["success"])
 
@@ -249,6 +251,8 @@ if __name__ == "__main__":
 
             if args.save_model and global_step % args.model_save_interval == 0:
                 save_model(actor, qf1, qf2, alpha, global_step, f"runs/{run_name}")
+    if args.evaluate:
+        print("\n\n",f"Success rate: {success/done_count}","\n\n")
     envs.close()
     eval_envs.close()
     if writer is not None:
