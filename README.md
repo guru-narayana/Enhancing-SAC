@@ -1,6 +1,6 @@
 
 
-# Enhancing SAC with Offline demonstrations and Priority Experience Replay
+# Enhancing SAC with Offline demonstrations and Prioritized Experience Replay
 
 ![Result](https://github.com/guru-narayana/Enhancing-SAC/blob/master/plots/results.gif)
 
