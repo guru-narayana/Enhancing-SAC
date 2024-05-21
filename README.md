@@ -1,6 +1,8 @@
 
 
+# Enhancing SAC with Offline demonstrations and Priority Experience Replay
 
+![Result](https://github.com/guru-narayana/Enhancing-SAC/blob/master/plots/results.gif)
 
 ## Environment setup
 Use the following commands to setup the environment in your local system.
